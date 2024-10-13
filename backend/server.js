@@ -2,10 +2,28 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const axios = require('axios');
+const cors = require('cors');
 const path = require('path');
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+
+// Explicitly set Socket.io CORS options
+const io = socketIo(server, {
+  cors: {
+    origin: '*',  // Allow any origin; can restrict to specific Ngrok URL if needed
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type'],
+    credentials: true
+  }
+});
+
+// Enable CORS for Express with more explicit options
+app.use(cors({
+  origin: '*', // You can restrict to your Ngrok URL like: 'https://your-ngrok-url.ngrok.io'
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type'],
+  credentials: true
+}));
 
 // Serve static files from the frontend folder
 app.use(express.static(path.join(__dirname, '../frontend')));
@@ -25,16 +43,19 @@ io.on('connection', (socket) => {
     const { userId, lat, long } = data;
     users.push({ userId, lat, long, socketId: socket.id });
     
-    // Check for other users in range using Google Distance Matrix API
-    let usersInRange = await checkUsersInRangeWithGoogleAPI(userId, lat, long);
-
-    // Notify users in range to connect via WebRTC
-    usersInRange.forEach(user => {
-      io.to(user.socketId).emit('connect-user', { userId, peerId: socket.id });
-    });
+    try {
+      // Check for other users in range using Google Distance Matrix API
+      let usersInRange = await checkUsersInRangeWithGoogleAPI(userId, lat, long);
+  
+      // Notify users in range to connect via WebRTC
+      usersInRange.forEach(user => {
+        io.to(user.socketId).emit('connect-user', { userId, peerId: socket.id });
+      });
+    } catch (error) {
+      console.error('Error in join-call:', error);
+    }
   });
 
-  // Handle WebRTC signaling (Offer, Answer, ICE Candidates)
   socket.on('signal', (data) => {
     io.to(data.peerId).emit('signal', { signal: data.signal, from: socket.id });
   });
@@ -52,10 +73,14 @@ io.on('connection', (socket) => {
       user.long = long;
       
       // Recheck range and disconnect users if necessary
-      let usersOutOfRange = await checkUsersInRangeWithGoogleAPI(userId, lat, long, 'disconnect');
-      usersOutOfRange.forEach(user => {
-        io.to(user.socketId).emit('disconnect-user', { peerId: socket.id });
-      });
+      try {
+        let usersOutOfRange = await checkUsersInRangeWithGoogleAPI(userId, lat, long, 'disconnect');
+        usersOutOfRange.forEach(user => {
+          io.to(user.socketId).emit('disconnect-user', { peerId: socket.id });
+        });
+      } catch (error) {
+        console.error('Error updating location:', error);
+      }
     }
   });
 });
@@ -67,10 +92,11 @@ const checkUsersInRangeWithGoogleAPI = async (userId, lat, long) => {
   
   if (otherUsers.length === 0) return [];
 
-  const origins = [`${lat},${long}`];
+  const origins = `${lat},${long}`;
   const destinations = otherUsers.map(user => `${user.lat},${user.long}`).join('|');
 
-  const googleMapsUrl = 'https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origins}&destinations=${destinations}&key=YAIzaSyDQkPKppoBEJMH0Y7Q1nyv3bDLHObcX8lU'
+  const googleMapsUrl = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origins}&destinations=${destinations}&key=YOUR_GOOGLE_MAPS_API_KEY`;
+
   try {
     const response = await axios.get(googleMapsUrl);
     const results = response.data.rows[0].elements;
